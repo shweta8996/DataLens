@@ -50,7 +50,7 @@ def generate_sql(nlp_text, table_schema):
     """Generate SQL from natural language using OpenAI API"""
     try:
         prompt = f"""
-        Convert the following request into a valid SQL query for a DuckDB table:
+        Convert the following request into a  valid SQL query for a DuckDB table:
         - The SQL MUST always include 'FROM df'.
         - The SQL MUST always include all necessary columns used in ORDER BY.
         - The SQL MUST follow proper DuckDB syntax.
