@@ -1,0 +1,11 @@
+region,category,sales,profit
+North,Electronics,50000,12000
+South,Clothing,32000,9000
+East,Furniture,,4000
+West,Groceries,27000,6000
+North,Toys,12000,2000
+South,Electronics,45000,15000
+East,Clothing,37000,11000
+West,Furniture,22000,
+North,Groceries,31000,7000
+South,Toys,18000,3000

@@ -1,0 +1,16 @@
+---
+Name: SQL Spreadsheet Assistant
+Description: Query and modify spreadsheet data using SQL, generated from natural language input.
+Param: nlp_query: The natural language query to convert into SQL (e.g., "Show the top 5 sales categories")
+Param: spreadsheet_path: The file path of the spreadsheet (CSV format)
+Param: visualization: (optional) Type of chart to generate (bar, line, scatter, etc.)
+
+#!/usr/bin/env python3 ${GPTSCRIPT_TOOL_DIR}/sheetLang.py
+
+---
+!metadata:*:category
+Data Processing and Visualization
+ 
+---
+!metadata:*:icon
+https://cdn-icons-png.flaticon.com/512/2919/2919592.png
