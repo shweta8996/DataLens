@@ -1,3 +1,18 @@
-venv
-/sample_data.csv
-/query.json
+# Python virtual environment
+venv/
+.venv/
+env/
+ENV/
+
+# Data files
+*.csv
+*.json
+sample_data.csv
+query.json
+
+# Generated images
+*.png
+
+# Output files
+*_analysis.json
+*_chart.png
