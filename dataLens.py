@@ -9,7 +9,7 @@ from pathlib import Path
 import asyncio
 from io import BytesIO, StringIO
 
-# Import the file utilities
+# Import helper utilities
 from file_utils import load_from_gptscript_workspace, save_to_gptscript_workspace, setup_logger
 
 # Define supported file types
@@ -33,11 +33,22 @@ def clean_sql_query(sql_text):
     
     return '\n'.join(lines).strip()
 
-def generate_sql(nlp_text, table_schema, api_key):
+# Set model and API parameters
+MODEL = os.getenv("OBOT_DEFAULT_LLM_MODEL", "gpt-4")
+BASE_URL = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
+API_KEY = os.environ["OPENAI_API_KEY"]
+
+# Initialize OpenAI client
+try:
+    from openai import OpenAI
+    client = OpenAI(base_url=BASE_URL, api_key=API_KEY)
+except Exception as e:
+    sys.exit(f"ERROR: Failed to initialize OpenAI client: {e}")
+
+
+def generate_sql(nlp_text, table_schema):
     """Generate SQL from natural language using OpenAI API"""
     try:
-        client = openai.OpenAI(api_key=api_key)
-        
         prompt = f"""
         Convert the following request into a valid SQL query for a DuckDB table:
         - The SQL MUST always include 'FROM df'.
@@ -52,7 +63,7 @@ def generate_sql(nlp_text, table_schema, api_key):
         """
         
         response = client.chat.completions.create(
-            model="gpt-4",
+            model=MODEL,
             messages=[{"role": "user", "content": prompt}],
             temperature=0.1  # Lower temperature for more deterministic SQL generation
         )
@@ -67,15 +78,6 @@ def generate_sql(nlp_text, table_schema, api_key):
         sys.exit(1)
 
 async def main():
-    # Set OpenAI API Key
-    api_key = os.environ.get('OPENAI_API_KEY')
-    if not api_key:
-        # Try alternative format with underscore
-        api_key = os.environ.get('OPEN_AI_API_KEY')
-        if not api_key:
-            logger.error("Error: Neither OPENAI_API_KEY nor OPEN_AI_API_KEY is set!")
-            sys.exit(1)
-    
     # Get input file from environment variable
     input_file = os.getenv("INPUT_FILE", "")
     if not input_file:
@@ -86,17 +88,15 @@ async def main():
     if not input_file.endswith(SUPPORTED_SPREADSHEET_TYPES):
         logger.error(f"Error: the input file must be one of: {SUPPORTED_SPREADSHEET_TYPES}")
         sys.exit(1)
-    
+
     # Read query parameters
     try:
-        if "GPTSCRIPT_INPUT" in os.environ:
-            input_json = os.getenv("GPTSCRIPT_INPUT")
-        else:
+        input_json = os.getenv("GPTSCRIPT_INPUT", None)
+        if not input_json:
             try:
                 with open("query.json", "r") as file:
                     input_json = file.read()
             except FileNotFoundError:
-                # If query.json doesn't exist, try to create a default query
                 logger.warning("query.json not found, using default query")
                 input_json = '{"nlp_query": "Summarize the data", "visualization": "bar"}'
         
@@ -104,10 +104,7 @@ async def main():
     except json.JSONDecodeError as e:
         logger.error(f"Error: Invalid JSON input! {str(e)}")
         sys.exit(1)
-    except Exception as e:
-        logger.error(f"Error reading input: {str(e)}")
-        sys.exit(1)
-
+    
     # Extract and validate parameters
     nlp_query = params.get("nlp_query")
     visualization = params.get("visualization", None)
@@ -115,8 +112,8 @@ async def main():
     if not nlp_query:
         logger.error("Error: Missing 'nlp_query' parameter!")
         sys.exit(1)
-    
-    # Load spreadsheet using the file path from environment
+
+    # Load spreadsheet
     try:
         logger.info(f"Loading file: {input_file}")
         file_content = await load_from_gptscript_workspace(input_file)
@@ -151,7 +148,7 @@ async def main():
 
     # Generate SQL from NLP query
     logger.info(f"Generating SQL for query: {nlp_query}")
-    sql_query = generate_sql(nlp_query, table_schema, api_key)
+    sql_query = generate_sql(nlp_query, table_schema)
     logger.info(f"Generated SQL Query: {sql_query}")
 
     # Execute SQL Query
@@ -212,7 +209,7 @@ async def main():
                     result_df[y_col].plot(kind="hist", ax=plt.gca())
                 elif visualization == "pie" and len(result_df) <= 10:  # Pie charts work best with few categories
                     result_df.plot(kind="pie", y=y_col, labels=result_df[x_col], ax=plt.gca())
-                
+
                 plt.title(f"{y_col} by {x_col}")
                 plt.tight_layout()
                 
