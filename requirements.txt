@@ -1,4 +1,7 @@
 openai
-pandas
 duckdb
+pandas
 matplotlib
+pathlib
+asyncio
+gptscript

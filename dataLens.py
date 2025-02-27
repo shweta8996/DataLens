@@ -9,28 +9,14 @@ from pathlib import Path
 import asyncio
 from io import BytesIO, StringIO
 
+# Import the file utilities
+from file_utils import load_from_gptscript_workspace, save_to_gptscript_workspace, setup_logger
+
 # Define supported file types
 SUPPORTED_SPREADSHEET_TYPES = (".csv", ".xlsx", ".xls")
 
-async def load_from_gptscript_workspace(file_path):
-    """Load file content from GPTScript workspace"""
-    try:
-        with open(file_path, "rb") as f:
-            return f.read()
-    except Exception as e:
-        raise ValueError(f"Failed to load file {file_path}: {str(e)}")
-
-async def save_to_gptscript_workspace(file_path, content):
-    """Save content to GPTScript workspace"""
-    try:
-        if isinstance(content, str):
-            with open(file_path, "w", encoding="utf-8") as f:
-                f.write(content)
-        else:
-            with open(file_path, "wb") as f:
-                f.write(content)
-    except Exception as e:
-        raise ValueError(f"Failed to save to file {file_path}: {str(e)}")
+# Set up logger
+logger = setup_logger(__name__)
 
 def clean_sql_query(sql_text):
     """
@@ -47,10 +33,10 @@ def clean_sql_query(sql_text):
     
     return '\n'.join(lines).strip()
 
-def generate_sql(nlp_text, table_schema):
+def generate_sql(nlp_text, table_schema, api_key):
     """Generate SQL from natural language using OpenAI API"""
     try:
-        client = openai.OpenAI(api_key=OPENAI_API_KEY)
+        client = openai.OpenAI(api_key=api_key)
         
         prompt = f"""
         Convert the following request into a valid SQL query for a DuckDB table:
@@ -74,28 +60,31 @@ def generate_sql(nlp_text, table_schema):
         raw_sql = response.choices[0].message.content.strip()
         return clean_sql_query(raw_sql)
     except openai.APIError as e:
-        print(f"OpenAI API Error: {str(e)}", file=sys.stderr)
+        logger.error(f"OpenAI API Error: {str(e)}")
         sys.exit(1)
     except Exception as e:
-        print(f"Error generating SQL: {str(e)}", file=sys.stderr)
+        logger.error(f"Error generating SQL: {str(e)}")
         sys.exit(1)
 
 async def main():
     # Set OpenAI API Key
-    OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY')
-    if not OPENAI_API_KEY:
-        print("Error: OPENAI_API_KEY is not set!", file=sys.stderr)
-        sys.exit(1)
+    api_key = os.environ.get('OPENAI_API_KEY')
+    if not api_key:
+        # Try alternative format with underscore
+        api_key = os.environ.get('OPEN_AI_API_KEY')
+        if not api_key:
+            logger.error("Error: Neither OPENAI_API_KEY nor OPEN_AI_API_KEY is set!")
+            sys.exit(1)
     
     # Get input file from environment variable
     input_file = os.getenv("INPUT_FILE", "")
     if not input_file:
-        print("Error: INPUT_FILE environment variable is not set", file=sys.stderr)
+        logger.error("Error: INPUT_FILE environment variable is not set")
         sys.exit(1)
     
     # Validate file type
     if not input_file.endswith(SUPPORTED_SPREADSHEET_TYPES):
-        print(f"Error: the input file must be one of: {SUPPORTED_SPREADSHEET_TYPES}", file=sys.stderr)
+        logger.error(f"Error: the input file must be one of: {SUPPORTED_SPREADSHEET_TYPES}")
         sys.exit(1)
     
     # Read query parameters
@@ -103,18 +92,20 @@ async def main():
         if "GPTSCRIPT_INPUT" in os.environ:
             input_json = os.getenv("GPTSCRIPT_INPUT")
         else:
-            with open("query.json", "r") as file:
-                input_json = file.read()
+            try:
+                with open("query.json", "r") as file:
+                    input_json = file.read()
+            except FileNotFoundError:
+                # If query.json doesn't exist, try to create a default query
+                logger.warning("query.json not found, using default query")
+                input_json = '{"nlp_query": "Summarize the data", "visualization": "bar"}'
         
         params = json.loads(input_json)
-    except FileNotFoundError:
-        print("Error: query.json file not found!", file=sys.stderr)
-        sys.exit(1)
     except json.JSONDecodeError as e:
-        print(f"Error: Invalid JSON input! {str(e)}", file=sys.stderr)
+        logger.error(f"Error: Invalid JSON input! {str(e)}")
         sys.exit(1)
     except Exception as e:
-        print(f"Error reading input: {str(e)}", file=sys.stderr)
+        logger.error(f"Error reading input: {str(e)}")
         sys.exit(1)
 
     # Extract and validate parameters
@@ -122,11 +113,12 @@ async def main():
     visualization = params.get("visualization", None)
     
     if not nlp_query:
-        print("Error: Missing 'nlp_query' parameter!", file=sys.stderr)
+        logger.error("Error: Missing 'nlp_query' parameter!")
         sys.exit(1)
     
     # Load spreadsheet using the file path from environment
     try:
+        logger.info(f"Loading file: {input_file}")
         file_content = await load_from_gptscript_workspace(input_file)
         file_ext = Path(input_file).suffix.lower()
         
@@ -137,37 +129,41 @@ async def main():
         elif file_ext in ['.xlsx', '.xls']:
             df = pd.read_excel(BytesIO(file_content))
         else:
-            print(f"Error: Unsupported file format '{file_ext}'!", file=sys.stderr)
+            logger.error(f"Error: Unsupported file format '{file_ext}'!")
             sys.exit(1)
         
         # Create connection and register the dataframe
         conn = duckdb.connect(database=':memory:')
         conn.register('df_view', df)
         conn.execute("CREATE TABLE df AS SELECT * FROM df_view")
+        logger.info(f"Successfully loaded data with {len(df)} rows and {len(df.columns)} columns")
     except Exception as e:
-        print(f"Error loading data: {str(e)}", file=sys.stderr)
+        logger.error(f"Error loading data: {str(e)}")
         sys.exit(1)
 
     # Extract Table Schema
     try:
         table_schema = conn.execute("PRAGMA table_info(df)").fetchdf().to_string(index=False)
+        logger.info(f"Schema extracted successfully")
     except Exception as e:
-        print(f"Error extracting schema: {str(e)}", file=sys.stderr)
+        logger.error(f"Error extracting schema: {str(e)}")
         sys.exit(1)
 
     # Generate SQL from NLP query
-    sql_query = generate_sql(nlp_query, table_schema)
-    print("Generated SQL Query:\n", sql_query)  # Debugging output
+    logger.info(f"Generating SQL for query: {nlp_query}")
+    sql_query = generate_sql(nlp_query, table_schema, api_key)
+    logger.info(f"Generated SQL Query: {sql_query}")
 
     # Execute SQL Query
     try:
         result_df = conn.execute(sql_query).fetchdf()
         if result_df.empty:
-            print("Warning: Query returned no results")
+            logger.warning("Query returned no results")
         result_json = result_df.to_dict(orient="records")
+        logger.info(f"SQL executed successfully, returned {len(result_df)} rows")
     except Exception as e:
-        print(f"SQL Execution Error: {str(e)}", file=sys.stderr)
-        print(f"Attempted query: {sql_query}", file=sys.stderr)
+        logger.error(f"SQL Execution Error: {str(e)}")
+        logger.error(f"Attempted query: {sql_query}")
         sys.exit(1)
 
     # Generate Visualization ONLY if explicitly requested
@@ -177,12 +173,13 @@ async def main():
         
         # Validate visualization type
         if visualization not in valid_viz_types:
-            print(f"Warning: '{visualization}' is not a supported visualization type. Using 'bar'.", file=sys.stderr)
+            logger.warning(f"'{visualization}' is not a supported visualization type. Using 'bar'.")
             visualization = "bar"  # Default to bar if invalid type provided
         
         # Only create visualization if we have enough data
         if len(result_df.columns) >= 2 and not result_df.empty:
             try:
+                logger.info(f"Creating {visualization} visualization")
                 plt.figure(figsize=(10, 6))
                 
                 # Try to identify appropriate x and y columns
@@ -219,26 +216,32 @@ async def main():
                 plt.title(f"{y_col} by {x_col}")
                 plt.tight_layout()
                 
-                # Set up chart path relative to input file
-                directory = os.path.dirname(input_file)
+                # Set up chart path based on input file name
                 name, _ = os.path.splitext(os.path.basename(input_file))
-                image_path = os.path.join(directory, f"{name}_chart.png")
+                image_path = f"{name}_chart.png"
                 
-                plt.savefig(image_path, dpi=300)
+                # Save the figure to a BytesIO buffer
+                buf = BytesIO()
+                plt.savefig(buf, format='png', dpi=300)
+                buf.seek(0)
+                
+                # Save the visualization using the GPTScript utilities
+                await save_to_gptscript_workspace(image_path, buf.getvalue())
+                logger.info(f"Visualization saved to {image_path}")
                 plt.close()
             except Exception as e:
-                print(f"Visualization Error: {str(e)}", file=sys.stderr)
+                logger.error(f"Visualization Error: {str(e)}")
                 # Continue execution even if visualization fails
         else:
-            print("Warning: Not enough data for visualization", file=sys.stderr)
+            logger.warning("Not enough data for visualization")
 
     # Clean up DuckDB resources
     try:
         conn.execute("DROP TABLE IF EXISTS df")
         conn.unregister('df_view')
         conn.close()
-    except:
-        pass  # Ignore cleanup errors
+    except Exception as e:
+        logger.warning(f"Error during cleanup: {str(e)}")
 
     # Return Final Output
     output = {
@@ -258,16 +261,16 @@ async def main():
         print(json.dumps(output, indent=4))
     else:
         if output_file == "":
-            directory, file_name = os.path.split(input_file)
-            name, ext = os.path.splitext(file_name)
-            output_file = os.path.join(directory, f"{name}_analysis.json")
+            name, _ = os.path.splitext(os.path.basename(input_file))
+            output_file = f"{name}_analysis.json"
         
         try:
+            logger.info(f"Saving analysis to {output_file}")
             await save_to_gptscript_workspace(output_file, json.dumps(output, indent=4))
             print(f"Analysis written to file: {output_file}")
         except Exception as e:
             print(json.dumps(output, indent=4))
-            print(f"Error writing to output file: {str(e)}", file=sys.stderr)
+            logger.error(f"Error writing to output file: {str(e)}")
 
 # Run the main function
 if __name__ == "__main__":

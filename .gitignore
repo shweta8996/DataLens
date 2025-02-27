@@ -4,6 +4,8 @@ venv/
 env/
 ENV/
 
+__pycache__
+
 # Data files
 *.csv
 *.json
