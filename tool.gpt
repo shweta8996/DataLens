@@ -5,7 +5,7 @@ Param: nlp_query: The natural language query to convert into SQL (e.g., "Show th
 Param: spreadsheet_path: The file path of the spreadsheet (CSV format)
 Param: visualization: (optional) Type of chart to generate (bar, line, scatter, etc.) using Matplotlib
 
-#!/usr/bin/env python3 ${GPTSCRIPT_TOOL_DIR}/sheetLang.py
+#!/usr/bin/env python3 ${GPTSCRIPT_TOOL_DIR}/dataLens.py
 
 ---
 !metadata:*:category
