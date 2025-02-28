@@ -14,44 +14,50 @@ from file_utils import setup_logger, load_from_gptscript_workspace, save_to_gpts
 SUPPORTED_SPREADSHEET_TYPES = (".csv", ".xlsx", ".xls")
 
 # Set up logger
-logger = setup_logger("SQL_Spreadsheet_Assistant")
-
-# Set model and API parameters
-MODEL = "gpt-4"
-BASE_URL = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
+logger = setup_logger(__name__)
 
 def clean_sql_query(sql_text):
     """
     Cleans the SQL query by removing any Markdown formatting like ```sql ``` blocks.
     """
     sql_text = sql_text.strip()
+    
+    # Remove markdown code block markers
     lines = sql_text.split('\n')
     if lines and (lines[0].startswith('```') or lines[0].strip() == 'sql'):
         lines = lines[1:]
     if lines and lines[-1].strip() == '```':
         lines = lines[:-1]
+    
     return '\n'.join(lines).strip()
 
 def prompt_for_api_key():
     """
-    Prompt the user for their OpenAI API key if not provided.
+    Prompt the user for their OpenAI API key if not found in environment.
     """
-    if "OPENAI_API_KEY" in os.environ and os.environ["OPENAI_API_KEY"].strip():
-        return os.environ["OPENAI_API_KEY"].strip()
-    
-    print("\n=== SQL Spreadsheet Assistant ===")
-    print("\nThis tool requires an OpenAI API key to convert natural language to SQL.")
-    api_key = input("\nPlease enter your OpenAI API key: ").strip()
-    
-    if not api_key:
-        logger.error("Error: OpenAI API key is required.")
-        sys.exit(1)
-    
-    print("\nThank you! Your API key will be used securely for this request only.\n")
-    return api_key
+    if "OPENAI_API_KEY" not in os.environ or not os.environ["OPENAI_API_KEY"].strip():
+        print("\n=== SQL Spreadsheet Assistant ===")
+        print("\nThis tool requires an OpenAI API key to convert natural language to SQL.")
+        api_key = input("\nPlease enter your OpenAI API key: ")
+        
+        if not api_key.strip():
+            print("Error: OpenAI API key is required.")
+            sys.exit(1)
+            
+        print("\nThank you! Your API key will be used securely for this request only.\n")
+        os.environ["OPENAI_API_KEY"] = api_key.strip()
+        return api_key
+    return os.environ["OPENAI_API_KEY"]
+
+# Get API key from environment or prompt user
+API_KEY = prompt_for_api_key()
+
+# Set model and API parameters
+MODEL = os.getenv("OBOT_DEFAULT_LLM_MODEL", "gpt-4")
+BASE_URL = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
 
 def initialize_openai_client(api_key):
-    """Initialize OpenAI client with provided API key"""
+    # Initialize OpenAI client
     try:
         from openai import OpenAI
         return OpenAI(base_url=BASE_URL, api_key=api_key)
@@ -62,7 +68,7 @@ def generate_sql(client, nlp_text, table_schema):
     """Generate SQL from natural language using OpenAI API"""
     try:
         prompt = f"""
-        Convert the following request into a valid SQL query for a DuckDB table:
+        Convert the following request into a  valid SQL query for a DuckDB table:
         - The SQL MUST always include 'FROM df'.
         - The SQL MUST always include all necessary columns used in ORDER BY.
         - The SQL MUST follow proper DuckDB syntax.
@@ -130,13 +136,16 @@ async def main():
     # Load spreadsheet
     try:
         logger.info(f"Loading file: {spreadsheet_path}")
+        # file_content = await load_from_gptscript_workspace(spreadsheet_path)
         file_ext = Path(spreadsheet_path).suffix.lower()
         
+        # Load into pandas based on file type
         if file_ext == '.csv':
             df = pd.read_csv(spreadsheet_path)
         else:
             df = pd.read_excel(spreadsheet_path)
         
+        # Create connection and register the dataframe
         conn = duckdb.connect(database=':memory:')
         conn.register('df_view', df)
         conn.execute("CREATE TABLE df AS SELECT * FROM df_view")
@@ -153,11 +162,13 @@ async def main():
         logger.error(f"Error extracting schema: {str(e)}")
         sys.exit(1)
 
-    # Generate and execute SQL Query
+    # Generate SQL from NLP query
+    logger.info(f"Generating SQL for query: {nlp_query}")
+    sql_query = generate_sql(client,nlp_query, table_schema)
+    logger.info(f"Generated SQL Query: {sql_query}")
+
+    # Execute SQL Query
     try:
-        sql_query = generate_sql(client, nlp_query, table_schema)
-        logger.info(f"Generated SQL Query: {sql_query}")
-        
         result_df = conn.execute(sql_query).fetchdf()
         if result_df.empty:
             logger.warning("Query returned no results")
@@ -165,37 +176,45 @@ async def main():
         logger.info(f"SQL executed successfully, returned {len(result_df)} rows")
     except Exception as e:
         logger.error(f"SQL Execution Error: {str(e)}")
+        logger.error(f"Attempted query: {sql_query}")
         sys.exit(1)
 
-    # Generate Visualization if requested
+    # Generate Visualization ONLY if explicitly requested
     image_path = None
-    if visualization:
+    if visualization:  # Only proceed if visualization parameter was provided
         valid_viz_types = ["bar", "line", "scatter", "hist", "pie"]
         
+        # Validate visualization type
         if visualization not in valid_viz_types:
             logger.warning(f"'{visualization}' is not a supported visualization type. Using 'bar'.")
-            visualization = "bar"
+            visualization = "bar"  # Default to bar if invalid type provided
         
+        # Only create visualization if we have enough data
         if len(result_df.columns) >= 2 and not result_df.empty:
             try:
                 logger.info(f"Creating {visualization} visualization")
                 plt.figure(figsize=(10, 6))
                 
-                # Identify appropriate x and y columns
-                x_col = result_df.columns[0]
-                numeric_cols = result_df.select_dtypes(include=['number']).columns.tolist()
+                # Try to identify appropriate x and y columns
+                x_col = result_df.columns[0]  # Default to first column for x-axis
                 
+                # For numeric columns, use the second column as y by default
+                numeric_cols = result_df.select_dtypes(include=['number']).columns.tolist()
                 if len(numeric_cols) > 0:
+                    # If first column is numeric and there are other numeric columns, use the second numeric column
                     if x_col in numeric_cols and len(numeric_cols) > 1:
                         y_col = [col for col in numeric_cols if col != x_col][0]
+                    # Otherwise use the first numeric column as y
                     else:
                         y_col = numeric_cols[0]
+                        # If y_col is same as x_col and there are other columns, use a different x
                         if y_col == x_col and len(result_df.columns) > 1:
                             x_col = [col for col in result_df.columns if col != y_col][0]
                 else:
+                    # If no numeric columns, just use the second column
                     y_col = result_df.columns[1] if len(result_df.columns) > 1 else result_df.columns[0]
                 
-                # Create visualization
+                # Create visualization based on type
                 if visualization == "bar":
                     result_df.plot(kind="bar", x=x_col, y=y_col, ax=plt.gca())
                 elif visualization == "line":
@@ -204,7 +223,7 @@ async def main():
                     result_df.plot(kind="scatter", x=x_col, y=y_col, ax=plt.gca())
                 elif visualization == "hist":
                     result_df[y_col].plot(kind="hist", ax=plt.gca())
-                elif visualization == "pie" and len(result_df) <= 10:
+                elif visualization == "pie" and len(result_df) <= 10:  # Pie charts work best with few categories
                     result_df.plot(kind="pie", y=y_col, labels=result_df[x_col], ax=plt.gca())
 
                 plt.title(f"{y_col} by {x_col}")
@@ -213,27 +232,35 @@ async def main():
                 # Save visualization
                 name = Path(spreadsheet_path).stem
                 image_path = f"{name}_chart.png"
-                plt.savefig(image_path, format='png', dpi=300)
+                
+                # Save the figure to a BytesIO buffer
+                buf = BytesIO()
+                plt.savefig(buf, format='png', dpi=300)
                 logger.info(f"Visualization saved to {image_path}")
                 plt.close()
             except Exception as e:
                 logger.error(f"Visualization Error: {str(e)}")
+                # Continue execution even if visualization fails
         else:
             logger.warning("Not enough data for visualization")
 
     # Clean up DuckDB resources
-    conn.execute("DROP TABLE IF EXISTS df")
-    conn.unregister('df_view')
-    conn.close()
+    try:
+        conn.execute("DROP TABLE IF EXISTS df")
+        conn.unregister('df_view')
+        conn.close()
+    except Exception as e:
+        logger.warning(f"Error during cleanup: {str(e)}")
 
-    # Prepare output
+    # Return Final Output
     output = {
         "nlp_query": nlp_query,
         "generated_sql": sql_query,
-        "data_preview": result_json[:10],
-        "row_count": len(result_df)
+        "data_preview": result_json[:10],  # Limit preview to 10 records
+        "row_count": len(result_df) if 'result_df' in locals() else 0
     }
 
+    # Include chart_path in the output if visualization was requested and successful
     if image_path:
         output["chart_path"] = image_path
 
@@ -244,5 +271,6 @@ async def main():
     
     print(json.dumps(output, indent=4))
 
+# Run the main function
 if __name__ == "__main__":
-    asyncio.run(main()) 
+    asyncio.run(main())
