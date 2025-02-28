@@ -1,138 +1,74 @@
 import os
 import sys
-import json
-import openai
-import duckdb
-import pandas as pd
-import matplotlib.pyplot as plt
-import asyncio
-from io import BytesIO, StringIO
-from file_utils import setup_logger, load_from_gptscript_workspace, save_to_gptscript_workspace
+import logging
+import gptscript
+import io
 
-# Define supported file types
-SUPPORTED_SPREADSHEET_TYPES = (".csv", ".xlsx", ".xls")
-
-# Set up logger
-logger = setup_logger("SQL_Spreadsheet_Assistant")
-
-def clean_sql_query(sql_text):
+def setup_logger(name):
+    """Setup a logger that writes to sys.stderr. This will show in GPTScript's debugging logs.
+    
+    Args:
+        name (str): The name of the logger.
+    Returns:
+        logging.Logger: The logger.
     """
-    Cleans the SQL query by removing any Markdown formatting like ```sql ``` blocks.
+    # Create a logger
+    logger = logging.getLogger(name)
+    logger.setLevel(logging.DEBUG)  # Set the logging level
+    # Create a stream handler that writes to sys.stderr
+    stderr_handler = logging.StreamHandler(sys.stderr)
+    # Create a log formatter
+    formatter = logging.Formatter(
+        "[NLP SQL Tool Debugging Log]: %(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    )
+    stderr_handler.setFormatter(formatter)
+    # Add the handler to the logger
+    logger.addHandler(stderr_handler)
+    return logger
+
+def prepend_base_path(base_path: str, file_path: str):
     """
-    sql_text = sql_text.strip()
-    lines = sql_text.split('\n')
-    if lines and (lines[0].startswith('```') or lines[0].strip() == 'sql'):
-        lines = lines[1:]
-    if lines and lines[-1].strip() == '```':
-        lines = lines[:-1]
-    return '\n'.join(lines).strip()
+    Prepend a base path to a file path if it's not already rooted in the base path.
+    
+    Args:
+        base_path (str): The base path to prepend.
+        file_path (str): The file path to check and modify.
+    Returns:
+        str: The modified file path with the base path prepended if necessary.
+    """
+    # Split the file path into parts for checking
+    file_parts = os.path.normpath(file_path).split(os.sep)
+    # Check if the base path is already at the root
+    if file_parts[0] == base_path:
+        return file_path
+    # Prepend the base path
+    return os.path.join(base_path, file_path)
 
-async def main():
-    # Read query parameters
-    try:
-        input_json = sys.argv[1] if len(sys.argv) > 1 else ""
-        params = json.loads(input_json)
-    except json.JSONDecodeError as e:
-        logger.error(f"Error: Invalid JSON input! {str(e)}")
-        sys.exit(1)
+async def save_to_gptscript_workspace(filepath: str, content) -> None:
+    """Save content to GPTScript workspace.
     
-    # Extract and validate parameters
-    nlp_query = params.get("nlp_query")
-    spreadsheet_path = params.get("spreadsheet_path")
-    visualization = params.get("visualization", None)
-    openai_api_key = params.get("openai_api_key")
+    Args:
+        filepath (str): Path to save the file to
+        content: Content to save (string or bytes)
+    """
+    gptscript_client = gptscript.GPTScript()
+    wksp_file_path = prepend_base_path("files", filepath)
     
-    if not nlp_query:
-        logger.error("Error: Missing 'nlp_query' parameter!")
-        sys.exit(1)
-    if not spreadsheet_path:
-        logger.error("Error: Missing 'spreadsheet_path' parameter!")
-        sys.exit(1)
-    if not openai_api_key:
-        logger.error("Error: Missing 'openai_api_key' parameter!")
-        sys.exit(1)
+    # Convert string content to bytes if needed
+    if isinstance(content, str):
+        content = content.encode("utf-8")
     
-    file_ext = os.path.splitext(spreadsheet_path)[-1].lower()
-    if file_ext not in SUPPORTED_SPREADSHEET_TYPES:
-        logger.error(f"Error: Unsupported file format '{file_ext}'")
-        sys.exit(1)
-    
-    # Load spreadsheet from GPTScript workspace
-    try:
-        logger.info(f"Loading file: {spreadsheet_path}")
-        file_content = await load_from_gptscript_workspace(spreadsheet_path)
-        if file_ext == '.csv':
-            df = pd.read_csv(StringIO(file_content.decode('utf-8')))
-        else:
-            df = pd.read_excel(BytesIO(file_content))
-        
-        conn = duckdb.connect(database=':memory:')
-        conn.register('df_view', df)
-        conn.execute("CREATE TABLE df AS SELECT * FROM df_view")
-        logger.info(f"Successfully loaded data with {len(df)} rows and {len(df.columns)} columns")
-    except Exception as e:
-        logger.error(f"Error loading data: {str(e)}")
-        sys.exit(1)
-    
-    # Extract Table Schema
-    try:
-        table_schema = conn.execute("PRAGMA table_info(df)").fetchdf().to_string(index=False)
-        logger.info("Schema extracted successfully")
-    except Exception as e:
-        logger.error(f"Error extracting schema: {str(e)}")
-        sys.exit(1)
-    
-    # Generate SQL Query using OpenAI
-    try:
-        prompt = f"""
-        Convert the following request into a valid SQL query for a DuckDB table:
-        - The SQL MUST always include 'FROM df'.
-        - The SQL MUST always include all necessary columns used in ORDER BY.
-        - The SQL MUST follow proper DuckDB syntax.
-        - The table schema is:
-        {table_schema}
-        
-        Request: "{nlp_query}"
-        """
-        
-        client = openai.OpenAI(api_key=openai_api_key)
-        response = client.ChatCompletion.create(
-            model="gpt-4",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.1
-        )
-        
-        sql_query = clean_sql_query(response["choices"][0]["message"]["content"].strip())
-        logger.info(f"Generated SQL Query: {sql_query}")
-    except Exception as e:
-        logger.error(f"Error generating SQL: {str(e)}")
-        sys.exit(1)
-    
-    # Execute SQL Query
-    try:
-        result_df = conn.execute(sql_query).fetchdf()
-        if result_df.empty:
-            logger.warning("Query returned no results")
-    except Exception as e:
-        logger.error(f"SQL Execution Error: {str(e)}")
-        sys.exit(1)
-    
-    # Save results to GPTScript workspace
-    output_file = "query_results.json"
-    output_content = json.dumps(result_df.to_dict(orient="records"), indent=4)
-    await save_to_gptscript_workspace(output_file, output_content.encode("utf-8"))
-    logger.info(f"Query results saved to {output_file}")
-    
-    # Clean up DuckDB resources
-    conn.close()
-    
-    print(json.dumps({
-        "nlp_query": nlp_query,
-        "generated_sql": sql_query,
-        "data_preview": result_df.head(10).to_dict(orient="records"),
-        "row_count": len(result_df),
-        "results_file": output_file
-    }, indent=4))
+    await gptscript_client.write_file_in_workspace(wksp_file_path, content)
 
-if __name__ == "__main__":
-    asyncio.run(main())
+async def load_from_gptscript_workspace(filepath: str) -> bytes:
+    """Load file content from GPTScript workspace.
+    
+    Args:
+        filepath (str): Path to the file to load
+    Returns:
+        bytes: The file content as bytes
+    """
+    gptscript_client = gptscript.GPTScript()
+    wksp_file_path = prepend_base_path("files", filepath)
+    file_content = await gptscript_client.read_file_in_workspace(wksp_file_path)
+    return file_content
