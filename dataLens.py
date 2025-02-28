@@ -33,10 +33,30 @@ def clean_sql_query(sql_text):
     
     return '\n'.join(lines).strip()
 
+def prompt_for_api_key():
+    """
+    Prompt the user for their OpenAI API key if not found in environment.
+    """
+    if "OPENAI_API_KEY" not in os.environ or not os.environ["OPENAI_API_KEY"].strip():
+        print("\n=== SQL Spreadsheet Assistant ===")
+        print("\nThis tool requires an OpenAI API key to convert natural language to SQL.")
+        api_key = input("\nPlease enter your OpenAI API key: ")
+        
+        if not api_key.strip():
+            print("Error: OpenAI API key is required.")
+            sys.exit(1)
+            
+        print("\nThank you! Your API key will be used securely for this request only.\n")
+        os.environ["OPENAI_API_KEY"] = api_key.strip()
+        return api_key
+    return os.environ["OPENAI_API_KEY"]
+
+# Get API key from environment or prompt user
+API_KEY = prompt_for_api_key()
+
 # Set model and API parameters
 MODEL = os.getenv("OBOT_DEFAULT_LLM_MODEL", "gpt-4")
 BASE_URL = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
-API_KEY = os.environ["OPENAI_API_KEY"]
 
 # Initialize OpenAI client
 try:

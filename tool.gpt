@@ -1,10 +1,10 @@
 ---
 Name: SQL Spreadsheet Assistant
-Description: Query and modify spreadsheet data using SQL, generated from natural language input.
+Description: Query and modify spreadsheet data using SQL, generated from natural language input. Requires an OpenAI API key.
 Param: nlp_query: The natural language query to convert into SQL (e.g., "Show the top 5 sales categories")
 Param: spreadsheet_path: The file path of the spreadsheet (CSV format)
 Param: visualization: (optional) Type of chart to generate (bar, line, scatter, etc.) using Matplotlib
-
+Param: openai_api_key: (required) Your OpenAI API key for natural language to SQL translation
 #!/usr/bin/env python3 ${GPTSCRIPT_TOOL_DIR}/dataLens.py
 
 ---
